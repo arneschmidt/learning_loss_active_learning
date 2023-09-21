@@ -99,7 +99,7 @@ def train_epoch(models, criterion, optimizers, dataloaders, epoch, epoch_loss, v
 
         scores, features = models['backbone'](inputs)
         target_loss = criterion(scores, labels)
-
+        # print('Iter ' + str(iters))
         if epoch > epoch_loss:
             # After 120 epochs, stop the gradient from the loss prediction module propagated to the target model.
             features[0] = features[0].detach()
@@ -210,7 +210,8 @@ def get_uncertainty(models, unlabeled_loader):
 ##
 # Main
 if __name__ == '__main__':
-    vis = visdom.Visdom(server='http://localhost', port=9000)
+    # vis = visdom.Visdom(server='http://localhost', port=5000)
+    vis = None
     plot_data = {'X': [], 'Y': [], 'legend': ['Backbone Loss', 'Module Loss', 'Total Loss']}
 
     for trial in range(TRIALS):
