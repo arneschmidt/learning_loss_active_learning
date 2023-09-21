@@ -228,9 +228,9 @@ if __name__ == '__main__':
         dataloaders  = {'train': train_loader, 'test': test_loader}
         
         # Model
-        resnet18    = resnet.ResNet18(num_classes=10).cuda()
-        loss_module = lossnet.LossNet().cuda()
-        models      = {'backbone': resnet18, 'module': loss_module}
+        resnet50    = resnet.ResNet50(num_classes=10).cuda()
+        loss_module = lossnet.LossNet(num_channels=[256, 512, 1024, 2048]).cuda()
+        models      = {'backbone': resnet50, 'module': loss_module}
         torch.backends.cudnn.benchmark = False
 
         # Active learning cycles
