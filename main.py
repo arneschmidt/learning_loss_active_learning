@@ -1,3 +1,10 @@
+# TODO
+# fix environment on cvision
+# check dataset paths etc
+# adjust dataloader
+# adjust network
+# adjust metrics
+
 '''Active Learning Procedure in PyTorch.
 
 Reference:
@@ -8,8 +15,13 @@ Reference:
 import os
 import random
 
+import pandas as pd
+import yaml
+import argparse
+
 # Torch
 import torch
+import sklearn
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
@@ -30,12 +42,22 @@ from tqdm import tqdm
 import models.resnet as resnet
 import models.lossnet as lossnet
 from config import *
+from data.data import DatasetPreparator
 from data.sampler import SubsetSequentialSampler
 
+parser = argparse.ArgumentParser(description="Cancer Classification")
+parser.add_argument("--config", "-c", type=str, default="./configs/data_config.yaml",
+                    help="Config path (yaml file expected) to default config.")
+args = parser.parse_args()
+with open(args.config) as file:
+    config = yaml.full_load(file)
+
 # Seed
-random.seed("Inyoung Cho")
-torch.manual_seed(0)
+random.seed(config['random_seed'])
+torch.manual_seed(config['random_seed'])
 torch.backends.cudnn.deterministic = True
+
+results_table = pd.DataFrame(columns=['cycle', 'test_cohens_quadratic_kappa', 'test_f1_score', 'test_accuracy'])
 
 ##
 # Data
@@ -51,9 +73,13 @@ test_transform = T.Compose([
     T.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]) # T.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) # CIFAR-100
 ])
 
-cifar10_train = CIFAR10('../cifar10', train=True, download=True, transform=train_transform)
-cifar10_unlabeled   = CIFAR10('../cifar10', train=True, download=True, transform=test_transform)
-cifar10_test  = CIFAR10('../cifar10', train=False, download=True, transform=test_transform)
+data_prep = DatasetPreparator(config)
+panda_train, panda_unlabeled, panda_test, start_ids = data_prep.get_datasets()
+
+
+# cifar10_train = CIFAR10('../cifar10', train=True, download=True, transform=train_transform)
+# cifar10_unlabeled   = CIFAR10('../cifar10', train=True, download=True, transform=test_transform)
+# cifar10_test  = CIFAR10('../cifar10', train=False, download=True, transform=test_transform)
 
 
 ##
@@ -91,7 +117,7 @@ def train_epoch(models, criterion, optimizers, dataloaders, epoch, epoch_loss, v
 
     for data in tqdm(dataloaders['train'], leave=False, total=len(dataloaders['train'])):
         inputs = data[0].cuda()
-        labels = data[1].cuda()
+        labels = data[1].cuda().long()
         iters += 1
 
         optimizers['backbone'].zero_grad()
@@ -147,17 +173,28 @@ def test(models, dataloaders, mode='val'):
 
     total = 0
     correct = 0
+
+    preds_total = []
+    labels_total = []
     with torch.no_grad():
         for (inputs, labels) in dataloaders[mode]:
             inputs = inputs.cuda()
-            labels = labels.cuda()
+            # labels = labels.cuda()
 
             scores, _ = models['backbone'](inputs)
             _, preds = torch.max(scores.data, 1)
-            total += labels.size(0)
-            correct += (preds == labels).sum().item()
-    
-    return 100 * correct / total
+            preds_total.append(preds.cpu().numpy())
+            labels_total.append(labels.cpu().numpy())
+            # total += labels.size(0)
+            # correct += (preds == labels).sum().item()
+
+    preds_total = np.array(preds_total)
+    labels_total = np.array(labels_total)
+    results = {}
+    results['test_cohens_quadratic_kappa'] = sklearn.metrics.cohen_kappa_score(labels_total, preds_total, weights='quadratic')
+    results['test_f1_score'] = sklearn.metrics.f1_score(labels_total, preds_total, average='macro')
+    results['test_accuracy'] = sklearn.metrics.accuracy_score(labels_total, preds_total)
+    return results
 
 #
 def train(models, criterion, optimizers, schedulers, dataloaders, num_epochs, epoch_loss, vis, plot_data):
@@ -175,7 +212,8 @@ def train(models, criterion, optimizers, schedulers, dataloaders, num_epochs, ep
 
         # Save a checkpoint
         if False and epoch % 5 == 4:
-            acc = test(models, dataloaders, 'test')
+            results = test(models, dataloaders, 'test')
+            acc = results['test_accuracy']
             if best_acc < acc:
                 best_acc = acc
                 torch.save({
@@ -216,21 +254,22 @@ if __name__ == '__main__':
 
     for trial in range(TRIALS):
         # Initialize a labeled dataset by randomly sampling K=ADDENDUM=1,000 data points from the entire dataset.
-        indices = list(range(NUM_TRAIN))
-        random.shuffle(indices)
-        labeled_set = indices[:ADDENDUM]
-        unlabeled_set = indices[ADDENDUM:]
-        
-        train_loader = DataLoader(cifar10_train, batch_size=BATCH, 
+        indices = list(range(len(panda_train)))
+        # random.shuffle(indices)
+        # labeled_set = indices[:ADDENDUM] # here list of start indices
+        # unlabeled_set = indices[ADDENDUM:]
+        labeled_set = start_ids
+        unlabeled_set = np.setdiff1d(indices, labeled_set)
+        train_loader = DataLoader(panda_train, batch_size=BATCH,
                                   sampler=SubsetRandomSampler(labeled_set), 
                                   pin_memory=True)
-        test_loader  = DataLoader(cifar10_test, batch_size=BATCH)
+        test_loader  = DataLoader(panda_test, batch_size=BATCH)
         dataloaders  = {'train': train_loader, 'test': test_loader}
         
         # Model
-        resnet50    = resnet.ResNet50(num_classes=10).cuda()
-        loss_module = lossnet.LossNet(num_channels=[256, 512, 1024, 2048]).cuda()
-        models      = {'backbone': resnet50, 'module': loss_module}
+        resnet    = resnet.ResNet34(num_classes=4).cuda()
+        loss_module = lossnet.LossNet(feature_sizes=[512, 256, 128, 64], num_channels=[64, 128, 256, 512]).cuda()
+        models      = {'backbone': resnet, 'module': loss_module}
         torch.backends.cudnn.benchmark = False
 
         # Active learning cycles
@@ -249,18 +288,21 @@ if __name__ == '__main__':
 
             # Training and test
             train(models, criterion, optimizers, schedulers, dataloaders, EPOCH, EPOCHL, vis, plot_data)
-            acc = test(models, dataloaders, mode='test')
-            print('Trial {}/{} || Cycle {}/{} || Label set size {}: Test acc {}'.format(trial+1, TRIALS, cycle+1, CYCLES, len(labeled_set), acc))
-
+            results = test(models, dataloaders, mode='test')
+            results_table = results_table.append(results, ignore_index=True)
+            print('Trial {}/{} || Cycle {}/{} || Label set size {}'.format(trial+1, TRIALS, cycle+1, CYCLES, len(labeled_set)))
+            print(results)
+            results_table.to_csv(os.path.join(config['output_dir'], 'results.csv'))
             ##
             #  Update the labeled dataset via loss prediction-based uncertainty measurement
 
             # Randomly sample 10000 unlabeled data points
-            random.shuffle(unlabeled_set)
-            subset = unlabeled_set[:SUBSET]
+            # random.shuffle(unlabeled_set)
+            # subset = unlabeled_set[:SUBSET]
+            subset = unlabeled_set
 
             # Create unlabeled dataloader for the unlabeled subset
-            unlabeled_loader = DataLoader(cifar10_unlabeled, batch_size=BATCH, 
+            unlabeled_loader = DataLoader(panda_unlabeled, batch_size=BATCH,
                                           sampler=SubsetSequentialSampler(subset), # more convenient if we maintain the order of subset
                                           pin_memory=True)
 
@@ -275,7 +317,7 @@ if __name__ == '__main__':
             unlabeled_set = list(torch.tensor(subset)[arg][:-ADDENDUM].numpy()) + unlabeled_set[SUBSET:]
 
             # Create a new dataloader for the updated labeled dataset
-            dataloaders['train'] = DataLoader(cifar10_train, batch_size=BATCH, 
+            dataloaders['train'] = DataLoader(panda_train, batch_size=BATCH,
                                               sampler=SubsetRandomSampler(labeled_set), 
                                               pin_memory=True)
         
