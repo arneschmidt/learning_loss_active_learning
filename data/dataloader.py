@@ -48,6 +48,7 @@ class PandaDataset(Dataset):
             image = self.transform(image=image)["image"]
         if self.target_transform:
             label = self.target_transform(label)
+        image = image.transpose(2, 0, 1).astype('float32')
         return image, label
 
 

@@ -1,6 +1,5 @@
 import os
 import random
-import globals
 import pandas as pd
 import numpy as np
 

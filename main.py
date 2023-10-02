@@ -21,7 +21,7 @@ import argparse
 
 # Torch
 import torch
-import sklearn
+from sklearn.metrics import cohen_kappa_score, f1_score, accuracy_score
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
@@ -35,7 +35,6 @@ import torchvision.models as models
 from torchvision.datasets import CIFAR100, CIFAR10
 
 # Utils
-import visdom
 from tqdm import tqdm
 
 # Custom
@@ -46,7 +45,7 @@ from data.data import DatasetPreparator
 from data.sampler import SubsetSequentialSampler
 
 parser = argparse.ArgumentParser(description="Cancer Classification")
-parser.add_argument("--config", "-c", type=str, default="./configs/data_config.yaml",
+parser.add_argument("--config", "-c", type=str, default="./configs/data_config_0.yaml",
                     help="Config path (yaml file expected) to default config.")
 args = parser.parse_args()
 with open(args.config) as file:
@@ -58,20 +57,6 @@ torch.manual_seed(config['random_seed'])
 torch.backends.cudnn.deterministic = True
 
 results_table = pd.DataFrame(columns=['cycle', 'test_cohens_quadratic_kappa', 'test_f1_score', 'test_accuracy'])
-
-##
-# Data
-train_transform = T.Compose([
-    T.RandomHorizontalFlip(),
-    T.RandomCrop(size=32, padding=4),
-    T.ToTensor(),
-    T.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]) # T.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) # CIFAR-100
-])
-
-test_transform = T.Compose([
-    T.ToTensor(),
-    T.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]) # T.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) # CIFAR-100
-])
 
 data_prep = DatasetPreparator(config)
 panda_train, panda_unlabeled, panda_test, start_ids = data_prep.get_datasets()
@@ -167,12 +152,16 @@ def train_epoch(models, criterion, optimizers, dataloaders, epoch, epoch_loss, v
 
 #
 def test(models, dataloaders, mode='val'):
+    print('Test')
     assert mode == 'val' or mode == 'test'
     models['backbone'].eval()
     models['module'].eval()
 
     total = 0
     correct = 0
+
+    num_steps = len(dataloaders[mode])
+    i = 0
 
     preds_total = []
     labels_total = []
@@ -187,13 +176,17 @@ def test(models, dataloaders, mode='val'):
             labels_total.append(labels.cpu().numpy())
             # total += labels.size(0)
             # correct += (preds == labels).sum().item()
+            i = i+1
+            if i % 100 == 0:
+                print('Step ' + str(i) + ' of ' + str(num_steps))
+                break
 
-    preds_total = np.array(preds_total)
-    labels_total = np.array(labels_total)
+    preds_total = np.array(preds_total).flatten().astype(np.int32)
+    labels_total = np.array(labels_total).flatten().astype(np.int32)
     results = {}
-    results['test_cohens_quadratic_kappa'] = sklearn.metrics.cohen_kappa_score(labels_total, preds_total, weights='quadratic')
-    results['test_f1_score'] = sklearn.metrics.f1_score(labels_total, preds_total, average='macro')
-    results['test_accuracy'] = sklearn.metrics.accuracy_score(labels_total, preds_total)
+    results['test_cohens_quadratic_kappa'] = cohen_kappa_score(labels_total, preds_total, weights='quadratic')
+    results['test_f1_score'] = f1_score(labels_total, preds_total, average='macro')
+    results['test_accuracy'] = accuracy_score(labels_total, preds_total)
     return results
 
 #
@@ -205,10 +198,9 @@ def train(models, criterion, optimizers, schedulers, dataloaders, num_epochs, ep
         os.makedirs(checkpoint_dir)
     
     for epoch in range(num_epochs):
+        train_epoch(models, criterion, optimizers, dataloaders, epoch, epoch_loss, vis, plot_data)
         schedulers['backbone'].step()
         schedulers['module'].step()
-
-        train_epoch(models, criterion, optimizers, dataloaders, epoch, epoch_loss, vis, plot_data)
 
         # Save a checkpoint
         if False and epoch % 5 == 4:
@@ -227,10 +219,13 @@ def train(models, criterion, optimizers, schedulers, dataloaders, num_epochs, ep
 
 #
 def get_uncertainty(models, unlabeled_loader):
+    print('Get Uncertainty')
     models['backbone'].eval()
     models['module'].eval()
     uncertainty = torch.tensor([]).cuda()
 
+    num_steps = len(unlabeled_loader)
+    i = 0
     with torch.no_grad():
         for (inputs, labels) in unlabeled_loader:
             inputs = inputs.cuda()
@@ -241,6 +236,9 @@ def get_uncertainty(models, unlabeled_loader):
             pred_loss = pred_loss.view(pred_loss.size(0))
 
             uncertainty = torch.cat((uncertainty, pred_loss), 0)
+            i = i+1
+            if i % 100 == 0:
+                print('Step ' + str(i) + ' of ' + str(num_steps))
     
     return uncertainty.cpu()
 
@@ -248,7 +246,6 @@ def get_uncertainty(models, unlabeled_loader):
 ##
 # Main
 if __name__ == '__main__':
-    # vis = visdom.Visdom(server='http://localhost', port=5000)
     vis = None
     plot_data = {'X': [], 'Y': [], 'legend': ['Backbone Loss', 'Module Loss', 'Total Loss']}
 

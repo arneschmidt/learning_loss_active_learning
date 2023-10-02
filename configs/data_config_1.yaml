@@ -1,0 +1,16 @@
+random_seed: 1
+output_dir: ./output/run_1
+
+data:
+  dataset_name: panda
+  dir: /home/arne/data/Panda/Panda_patches_center/
+  data_split_dir: /home/arne/data/Panda/Panda_patches_center/
+  artifact_dir: ./dataset_dependent/panda/
+  image_target_size: [512, 512]
+  active_learning:
+    start:
+      wsis_per_class: 20
+      labels_per_class_and_wsi: 5 # -1 (all) or number of labels per wsi
+    step:
+      wsis: 80
+      labels_per_wsi: 5
